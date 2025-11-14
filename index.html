@@ -1,0 +1,1453 @@
+<!DOCTYPE html>
+
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta
+    name="viewport"
+    content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no"
+  />
+  <title>GYROAD</title>
+  <!-- PEERJS LIBRARY FOR P2P CONNECTION -->
+  <script src="https://unpkg.com/peerjs@1.4.7/dist/peerjs.min.js"></script>
+  <style>
+    :root {
+      /* Board + grid */
+      --bg-color: #1a1a1a;
+      --board-bg: #2a2235;
+      --cell-color: #584a73;
+      --cell-hover-color: #6a5a87;
+      --border-color: #3b314a;
+      --gap-size: 0.5vmin;
+      --grid-rows: 8;
+      --grid-cols: 7;
+
+/* Selection/highlight */
+  --selected-color: #9370db;
+  --selected-shadow-color: #9370db;
+  --selected-flash-color: #ffffff;
+
+  --available-color: #d8b4fe;
+  --available-shadow-color: #c79bff;
+  --available-flash-color: #ffffff;
+
+  /* Swap target highlight (occupied target) */
+  --swap-color: #ffb3c1;
+  --swap-shadow-color: #ff7a90;
+
+  /* Metallic piece palette (base) */
+  --metal-base-color: #9aa0b8;
+  --metal-highlight-color: #edeaf9;
+  --metal-shadow-color: #454b61;
+
+  /* Default energy (purple team) */
+  --energy-color: #a87cff;
+  --energy-glow-color: #ead8ff;
+
+  --node-size: 17%;
+  --node-offset: 6%;
+  --connector-width: 6%;
+  --connector-length: 42%;
+}
+
+html, body {
+  width: 100%; height: 100%; margin: 0; padding: 0; overflow: hidden;
+  background-color: var(--bg-color);
+  display: flex; align-items: center; justify-content: center;
+  color: #eee; -webkit-tap-highlight-color: transparent;
+  font-family: 'Georgia', serif;
+  font-weight: bold;
+  font-style: italic;
+}
+
+#game-wrapper {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 15px;
+}
+
+#game-info {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  display: flex;
+  justify-content: space-between;
+  padding: 15px clamp(10px, 3vw, 20px);
+  box-sizing: border-box;
+  pointer-events: none;
+  z-index: 100;
+}
+.score-container {
+  display: flex;
+  gap: clamp(4px, 1vw, 8px);
+}
+.score-bar {
+  width: clamp(20px, 5vw, 40px);
+  height: clamp(10px, 2.5vw, 15px);
+  border: 2px solid;
+  background-color: transparent;
+  transition: background-color 0.3s ease;
+  box-shadow: 0 0 5px rgba(0,0,0,0.5);
+}
+.score-bar.filled {
+  background-color: var(--fill-color);
+}
+
+#game-container {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+#win-message {
+  position: absolute;
+  top: 50%; left: 50%;
+  transform: translate(-50%, -50%);
+  background-color: rgba(26, 26, 26, 0.9);
+  color: white;
+  padding: 30px 50px;
+  border-radius: 10px;
+  font-size: 2.5rem;
+  text-align: center;
+  z-index: 1001; /* Above everything */
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 0.5s ease;
+  text-shadow: 0 0 8px rgba(255, 255, 255, 0.7);
+}
+#win-message.visible { opacity: 1; }
+
+#board {
+  display: grid;
+  grid-template-columns: repeat(var(--grid-cols), 1fr);
+  grid-template-rows: repeat(var(--grid-rows), 1fr);
+  gap: var(--gap-size);
+  --aspect-ratio: calc(var(--grid-cols) / var(--grid-rows));
+  width: min(95vw, calc(85vh * var(--aspect-ratio)));
+  height: min(calc(100vh - 60px), calc(95vw / var(--aspect-ratio))); /* Adjusted height to not overlap score */
+  background-color: var(--board-bg); padding: var(--gap-size);
+  border: 3px solid var(--border-color); box-shadow: 0 0 20px rgba(0,0,0,0.7);
+  transition: border-color 0.4s ease, transform 0.5s ease;
+}
+
+/* NEW: Class to flip the board for the orange player in online mode */
+#board.board-flipped {
+    transform: rotate(180deg);
+}
+#board.board-flipped .piece { /* Counter-rotate pieces so they are upright */
+    transform: rotate(var(--base-rot, 0deg)) rotate(var(--piece-rot, 0deg)) rotate(180deg);
+}
+#board.board-flipped .cell.selected .piece {
+    transform: rotate(var(--base-rot, 0deg)) rotate(var(--piece-rot, 0deg)) rotate(180deg) scale(1.05);
+}
+
+
+#board.interaction-locked { pointer-events: none; }
+
+.cell {
+  background-color: var(--cell-color);
+  cursor: pointer;
+  transition: background-color 0.2s ease, box-shadow 0.2s ease;
+  will-change: transform, box-shadow; position: relative;
+  -webkit-tap-highlight-color: transparent; user-select: none; overflow: hidden;
+}
+.cell.has-immobilized { cursor: not-allowed; }
+
+@media (hover: hover) and (pointer: fine) {
+  .cell:not(.selected):not(.available):not(.swap-available):not(.no-hover):not(.invalid):hover {
+    background-color: var(--cell-hover-color);
+    box-shadow: inset 0 0 15px rgba(0,0,0,0.5);
+  }
+}
+
+.cell.selected {
+  --anim-glow-color: var(--selected-shadow-color);
+  --anim-flash-color: var(--selected-flash-color);
+  background-color: var(--selected-color);
+  animation: powerUp 0.3s ease-out, breathingGlow 2.5s ease-in-out 0.3s infinite;
+  z-index: 10;
+}
+
+.cell.available {
+  --anim-glow-color: var(--available-shadow-color);
+  --anim-flash-color: var(--available-flash-color);
+  background-color: var(--available-color);
+  animation: powerUp 0.3s ease-out, breathingGlow 2.5s ease-in-out 0.3s infinite;
+  z-index: 5;
+}
+
+.cell.swap-available {
+  --anim-glow-color: var(--swap-shadow-color);
+  --anim-flash-color: #ffffff;
+  background-color: var(--swap-color);
+  animation: powerUp 0.3s ease-out, breathingGlow 2.5s ease-in-out 0.3s infinite;
+  z-index: 6;
+}
+
+/* Preserve rotation via CSS var; orange team has --base-rot: 180deg */
+.piece { transform: rotate(var(--base-rot, 0deg)) rotate(var(--piece-rot, 0deg)); }
+.cell.selected .piece { opacity: 0.9; transform: rotate(var(--base-rot, 0deg)) rotate(var(--piece-rot, 0deg)) scale(1.05); }
+
+.cell.deselecting { animation: powerDown 0.3s ease-in forwards; }
+.cell.invalid { animation: invalidWobble 0.4s ease-in-out; }
+
+@keyframes powerUp {
+  0% { transform: scale(1); box-shadow: none; }
+  70% { box-shadow: 0 0 40px 10px var(--anim-glow-color), inset 0 0 20px var(--anim-flash-color); transform: scale(1.05); }
+  100% { transform: scale(1); }
+}
+@keyframes breathingGlow {
+  0%, 100% { box-shadow: 0 0 7px var(--anim-glow-color), inset 0 0 5px rgba(255, 255, 255, 0.2); }
+  50% { box-shadow: 0 0 25px var(--anim-glow-color), inset 0 0 10px rgba(255, 255, 255, 0.4); }
+}
+@keyframes powerDown {
+  from { background-color: var(--selected-color); box-shadow: 0 0 15px var(--selected-shadow-color); transform: scale(1); }
+  to { background-color: var(--cell-color); box-shadow: none; transform: scale(0.95); }
+}
+@keyframes invalidWobble {
+  0%, 100% { transform: translateX(0); }
+  20% { transform: translateX(-5%); box-shadow: 0 0 8px rgba(200, 0, 0, 0.6); }
+  40% { transform: translateX(5%); }
+  60% { transform: translateX(-3%); }
+  80% { translateX(3%); }
+}
+
+/* Final piece design */
+.piece {
+  position: absolute; top: 0; left: 0; width: 100%; height: 100%;
+  pointer-events: none; transition: opacity 0.3s, transform 0.3s, filter 0.3s; display: block;
+}
+.piece.no-transition { transition: opacity 0.3s, transform 0s; } /* Class to disable transform animation */
+.piece > div { position: absolute; transition: all 0.2s ease-in-out; }
+
+.piece.immobilized {
+  filter: grayscale(80%) brightness(0.7);
+}
+
+.centerpiece {
+  width: var(--center-size); height: var(--center-size);
+  top: 50%; left: 50%; transform: translate(-50%, -50%);
+  background: linear-gradient(145deg, var(--metal-highlight-color), var(--metal-base-color));
+  box-shadow: inset 0 1px 2px rgba(255,255,255,0.5), 0 2px 5px rgba(0,0,0,0.5);
+  border: 1px solid var(--metal-shadow-color); display: flex; justify-content: center; align-items: center; z-index: 2;
+}
+.piece.show-diamond { --center-size: 25%; }
+.piece.show-circle  { --center-size: 40%; }
+.piece.show-point   { --center-size: 20%; }
+.piece.show-diamond .centerpiece { transform: translate(-50%, -50%) rotate(45deg); }
+.piece.show-circle .centerpiece, .piece.show-point .centerpiece { border-radius: 50%; }
+
+.gem {
+  width: 60%; height: 60%;
+  background: radial-gradient(circle at 30% 30%, var(--energy-glow-color), var(--energy-color));
+  box-shadow: inset 0 0 8px rgba(0,0,0,0.6); opacity: 0.7;
+}
+.piece:not(.show-diamond) .gem { border-radius: 50%; }
+.piece.show-diamond .gem { border-radius: 2px; }
+
+.connector {
+  width: var(--connector-width); height: var(--connector-length);
+  top: 50%; left: 50%; background: linear-gradient(var(--metal-shadow-color), #2a2e37);
+  transform-origin: center bottom; z-index: 1; border-radius: 2px;
+}
+.connector.n  { transform: translate(-50%, -100%) rotate(0deg); }
+.connector.ne { transform: translate(-50%, -100%) rotate(45deg); }
+.connector.e  { transform: translate(-50%, -100%) rotate(90deg); }
+.connector.se { transform: translate(-50%, -100%) rotate(135deg); }
+.connector.s  { transform: translate(-50%, -100%) rotate(180deg); }
+.connector.sw { transform: translate(-50%, -100%) rotate(225deg); }
+.connector.w  { transform: translate(-50%, -100%) rotate(270deg); }
+.connector.nw { transform: translate(-50%, -100%) rotate(315deg); }
+
+.node {
+  width: var(--node-size); height: var(--node-size); border-radius: 50%;
+  z-index: 3; background: radial-gradient(circle at 35% 35%, var(--metal-highlight-color), var(--metal-base-color));
+  box-shadow: inset 0 2px 4px rgba(0,0,0,0.5), 0 1px 2px rgba(0,0,0,0.4);
+  border: 1px solid var(--metal-shadow-color);
+}
+.node.n  { top: var(--node-offset); left: 50%; transform: translateX(-50%); }
+.node.ne { top: var(--node-offset); right: var(--node-offset); }
+.node.e  { top: 50%; right: var(--node-offset); transform: translateY(-50%); }
+.node.se { bottom: var(--node-offset); right: var(--node-offset); }
+.node.s  { bottom: var(--node-offset); left: 50%; transform: translateX(-50%); }
+.node.sw { bottom: var(--node-offset); left: var(--node-offset); }
+.node.w  { top: 50%; left: var(--node-offset); transform: translateY(-50%); }
+.node.nw { top: var(--node-offset); left: var(--node-offset); }
+
+/* ONLY the selected piece glows */
+.cell.selected .piece .gem {
+  opacity: 1;
+  box-shadow: inset 0 0 10px 2px var(--energy-color), 0 0 12px -4px var(--energy-color);
+}
+.cell.selected .piece .node:not(.jump-node):not(.power-node) {
+  background: radial-gradient(circle at 30% 30%, var(--energy-glow-color), var(--energy-color));
+  box-shadow: inset 0 0 10px 2px var(--energy-color), 0 0 12px -4px var(--energy-color);
+  border-color: var(--energy-glow-color);
+}
+.cell.selected .piece .jump-node {
+  background: radial-gradient(circle at 50% 50%, var(--metal-shadow-color), #000);
+  box-shadow: 0 0 0 2px var(--energy-glow-color), 0 0 10px 4px var(--energy-color);
+  border-color: var(--energy-glow-color);
+}
+.cell.selected .piece .power-node {
+  background: radial-gradient(circle at 45% 45%, #ffffff, var(--energy-glow-color) 55%, var(--energy-color) 100%);
+  box-shadow: 0 0 0 2px #ffffff, 0 0 10px 4px var(--energy-color), inset 0 0 8px 1px rgba(0,0,0,0.4);
+  border-color: #ffffff;
+}
+
+/* Visibility controls */
+.centerpiece, .connector, .node { display: none; }
+.piece.show-diamond .center-diamond,
+.piece.show-circle .center-circle,
+.piece.show-point .center-point { display: flex; }
+.piece.show-n  .connector.n,  .piece.show-n  .node.n  { display: block; }
+.piece.show-ne .connector.ne, .piece.show-ne .node.ne { display: block; }
+.piece.show-e  .connector.e,  .piece.show-e  .node.e  { display: block; }
+.piece.show-se .connector.se, .piece.show-se .node.se { display: block; }
+.piece.show-s  .connector.s,  .piece.show-s  .node.s  { display: block; }
+.piece.show-sw .connector.sw, .piece.show-sw .node.sw { display: block; }
+.piece.show-w  .connector.w,  .piece.show-w  .node.w  { display: block; }
+.piece.show-nw .connector.nw, .piece.show-nw .node.nw { display: block; }
+
+/* Controls */
+#controls {
+  position: absolute;
+  left: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 10px;
+  z-index: 200;
+  transition: top 0.4s ease, bottom 0.4s ease, transform 0.4s ease;
+}
+/* This class flips the controls container but counter-rotates the buttons to keep them upright */
+#controls.board-flipped {
+    transform: translateY(-100%) translateY(-10px) rotate(180deg);
+}
+#controls.board-flipped .control-btn {
+    transform: rotate(180deg);
+}
+
+#controls.purple-turn {
+  top: 100%;
+  transform: translateY(10px);
+}
+#controls.orange-turn {
+  top: 0;
+  transform: translateY(-100%) translateY(-10px) rotate(180deg);
+}
+
+.control-btn {
+  width: 50px; height: 50px;
+  background: linear-gradient(145deg, #6a5a87, #3b314a);
+  border: 2px solid var(--border-color);
+  border-radius: 0;
+  cursor: pointer;
+  color: #edeaf9;
+  padding: 8px;
+  box-shadow: 0 2px 5px rgba(0,0,0,0.5), inset 0 1px 1px rgba(255,255,255,0.2);
+  transition: all 0.2s ease;
+  -webkit-tap-highlight-color: transparent;
+}
+.control-btn:hover {
+  background: linear-gradient(145deg, #7a6a97, #4b415a);
+  box-shadow: 0 4px 8px rgba(0,0,0,0.6), inset 0 1px 1px rgba(255,255,255,0.3);
+}
+.control-btn:active {
+  transform: scale(0.98);
+  box-shadow: 0 0 20px 2px var(--selected-shadow-color), inset 0 0 10px rgba(0,0,0,0.5);
+}
+.control-btn.active {
+  background: var(--selected-color);
+  box-shadow: 0 0 15px var(--selected-shadow-color);
+  border-color: var(--selected-shadow-color);
+}
+.control-btn.hidden { display: none; }
+.control-btn svg { width: 100%; height: 100%; pointer-events: none; }
+#rotate-btn svg {
+  transform: scaleX(-1);
+}
+#rotate-actions { display: flex; gap: 10px; }
+#rotate-actions.hidden { display: none; }
+
+/* Settings Menu */
+#settings-btn {
+    position: fixed;
+    bottom: 15px;
+    left: 50%;
+    transform: translateX(-50%);
+    z-index: 1100;
+    width: 50px;
+    height: 50px;
+    border-radius: 50%;
+}
+#settings-modal, #online-setup {
+    position: fixed;
+    top: 0; left: 0; width: 100%; height: 100%;
+    background-color: rgba(0,0,0,0.8);
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    align-items: center;
+    z-index: 1099;
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 0.3s ease;
+}
+#settings-modal.visible, #online-setup.visible {
+    opacity: 1;
+    pointer-events: auto;
+}
+#settings-modal h2, #online-setup h2 {
+    font-size: 2rem;
+    text-shadow: 0 0 5px #fff;
+    margin-bottom: 20px;
+}
+.mode-btn, .online-btn {
+    font-family: 'Georgia', serif;
+    font-weight: bold;
+    font-style: italic;
+    font-size: 1.5rem;
+    padding: 15px 40px;
+    margin: 10px;
+    cursor: pointer;
+    color: #eee;
+    background: linear-gradient(145deg, #6a5a87, #3b314a);
+    border: 2px solid var(--border-color);
+    box-shadow: 0 2px 5px rgba(0,0,0,0.5);
+    transition: all 0.2s ease;
+}
+.mode-btn:hover, .online-btn:hover {
+    background: var(--selected-color);
+    box-shadow: 0 0 15px var(--selected-shadow-color);
+}
+/* NEW: Styles for Online Setup Screen */
+#online-setup .input-group {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 15px;
+    margin-bottom: 20px;
+}
+#online-setup input {
+    font-size: 1.2rem;
+    padding: 10px;
+    border: 2px solid var(--border-color);
+    background-color: var(--bg-color);
+    color: #eee;
+    text-align: center;
+    width: 250px;
+}
+#online-status {
+    margin-top: 20px;
+    font-size: 1.2rem;
+    min-height: 1.5em;
+}
+  </style>
+</head>
+<body>
+  <div id="game-info">
+    <div id="score-purple" class="score-container"></div>
+    <div id="score-orange" class="score-container"></div>
+  </div>
+  
+  <div id="game-wrapper">
+    <div id="game-container">
+      <div id="board"></div>
+      <div id="win-message"></div>
+      <div id="controls">
+        <button id="rotate-btn" class="control-btn hidden" title="Rotate Piece">
+          <svg fill="currentColor" version="1.1" id="Capa_1" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" 
+             viewBox="0 0 509.823 509.822" xml:space="preserve">
+            <g>
+              <path d="M509.823,254.911c0,140.559-114.354,254.911-254.911,254.911C114.353,509.822,0,395.47,0,254.911h44.97
+                c0,115.758,94.182,209.949,209.942,209.949c115.757,0,209.938-94.191,209.938-209.949c0-115.76-94.182-209.941-209.938-209.941
+                c-50.893,0-99.505,18.291-137.719,51.558l45.908,45.903L20.507,165.208L43.283,22.633l42.057,42.05
+                C132.097,22.972,192.071,0,254.912,0C395.469,0,509.823,114.353,509.823,254.911z M409.653,251.164L255.002,96.513L100.347,251.164
+                l154.655,154.652L409.653,251.164z"/>
+            </g>
+          </svg>
+        </button>
+        <div id="rotate-actions" class="hidden">
+          <button id="confirm-btn" class="control-btn" title="Confirm Rotation">
+            <svg viewBox="0 0 24 24" fill="currentColor"><path d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z"/></svg>
+          </button>
+          <button id="cancel-btn" class="control-btn" title="Cancel Rotation">
+            <svg viewBox="0 0 24 24" fill="currentColor"><path d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+          </button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <button id="settings-btn" class="control-btn">
+    <svg fill="currentColor" viewBox="0 0 24 24"><path d="M19.43 12.98c.04-.32.07-.64.07-.98s-.03-.66-.07-.98l2.11-1.65c.19-.15.24-.42.12-.64l-2-3.46c-.12-.22-.39-.3-.61-.22l-2.49 1c-.52-.4-1.08-.73-1.69-.98l-.38-2.65C14.46 2.18 14.25 2 14 2h-4c-.25 0-.46.18-.49.42l-.38 2.65c-.61.25-1.17.59-1.69.98l-2.49-1c-.23-.09-.49 0-.61.22l-2 3.46c-.13.22-.07.49.12.64l2.11 1.65c-.04.32-.07.65-.07.98s.03.66.07.98l-2.11 1.65c-.19.15-.24.42-.12.64l2 3.46c.12.22.39.3.61.22l2.49-1c.52.4 1.08.73 1.69.98l.38 2.65c.03.24.24.42.49.42h4c.25 0 .46-.18.49-.42l.38-2.65c.61-.25 1.17-.59 1.69-.98l2.49 1c.23-.09.49 0 .61-.22l2-3.46c.12-.22.07-.49-.12-.64l-2.11-1.65zM12 15.5c-1.93 0-3.5-1.57-3.5-3.5s1.57-3.5 3.5-3.5 3.5 1.57 3.5 3.5-1.57 3.5-3.5 3.5z"/></svg>
+  </button>
+
+  <div id="settings-modal">
+    <h2>Select Game Mode</h2>
+    <button id="mode-2p" class="mode-btn">2-Player</button>
+    <button id="mode-bot" class="mode-btn">vs Bot</button>
+    <button id="mode-online" class="mode-btn">Online</button>
+  </div>
+
+  <!-- NEW: Online Setup Screen -->
+  <div id="online-setup">
+      <h2>Online Match</h2>
+      <div class="input-group">
+          <input type="text" id="my-nickname" placeholder="Your Nickname">
+          <input type="text" id="opponent-nickname" placeholder="Opponent's Nickname">
+      </div>
+      <button id="connect-btn" class="online-btn">Connect</button>
+      <p id="online-status">Enter nicknames and connect.</p>
+  </div>
+
+  <template id="piece-template">
+    <div class="piece">
+      <div class="connector n"></div> <div class="connector ne"></div> <div class="connector e"></div> <div class="connector se"></div>
+      <div class="connector s"></div> <div class="connector sw"></div> <div class="connector w"></div> <div class="connector nw"></div>
+      <div class="node n"></div> <div class="node ne"></div> <div class="node e"></div> <div class="node se"></div>
+      <div class="node s"></div> <div class="node sw"></div> <div class="node w"></div> <div class="node nw"></div>
+      <div class="centerpiece center-diamond"><div class="gem"></div></div>
+      <div class="centerpiece center-circle"><div class="gem"></div></div>
+      <div class="centerpiece center-point"><div class="gem"></div></div>
+    </div>
+  </template>
+
+  <script>
+    document.addEventListener('DOMContentLoaded', () => {
+      const CONFIG = {
+        ROWS: 8, COLS: 7, LAYER_DELAY: 80, STEP_DURATION: 240, WIN_SCORE: 6,
+      };
+      const TEAM_ENERGY = {
+        purple: { color: '#A87CFF', glow: '#EAD8FF' },
+        orange: { color: '#FF6B6B', glow: '#FFD6D6' }
+      };
+      const PIECE_CONFIGS = [
+        { id: 'PR', type: 'P', directions: ['w', 'se'] }, { id: 'PL', type: 'P', directions: ['e', 'sw'] },
+        { id: 'PX', type: 'P', directions: ['nw', 'ne', 'sw', 'se'] }, { id: 'DP', type: 'D', directions: ['n', 'w', 'e'] },
+        { id: 'DT', type: 'D', directions: ['n', 'nw', 'ne', 's'] }, { id: 'DN', type: 'D', directions: ['n', 's', 'w', 'e'], jumpDirections: ['w', 'e'] },
+        { id: 'C',  type: 'C', directions: ['n', 'sw', 'se'] }
+      ];
+      const CONFIG_BY_ID = PIECE_CONFIGS.reduce((acc, p) => (acc[p.id] = p, acc), {});
+      const TYPE_CLASS = { D: 'show-diamond', C: 'show-circle', P: 'show-point' };
+      const PURPLE_SETUP = [
+        { id: 'PR', row: 6, col: 0 }, { id: 'PL', row: 6, col: 1 }, { id: 'PR', row: 6, col: 2 },
+        { id: 'PX', row: 6, col: 3 }, { id: 'PL', row: 6, col: 4 }, { id: 'PR', row: 6, col: 5 },
+        { id: 'PL', row: 6, col: 6 }, { id: 'DP', row: 7, col: 0 }, { id: 'DT', row: 7, col: 1 },
+        { id: 'DN', row: 7, col: 2 }, { id: 'C',  row: 7, col: 3 }, { id: 'DN', row: 7, col: 4 },
+        { id: 'DT', row: 7, col: 5 }, { id: 'DP', row: 7, col: 6 }
+      ];
+      const ORANGE_SETUP = [
+        { id: 'PL', row: 1, col: 0 }, { id: 'PR', row: 1, col: 1 }, { id: 'PL', row: 1, col: 2 },
+        { id: 'PX', row: 1, col: 3 }, { id: 'PR', row: 1, col: 4 }, { id: 'PL', row: 1, col: 5 },
+        { id: 'PR', row: 1, col: 6 }, { id: 'DP', row: 0, col: 0 }, { id: 'DT', row: 0, col: 1 },
+        { id: 'DN', row: 0, col: 2 }, { id: 'C',  row: 0, col: 3 }, { id: 'DN', row: 0, col: 4 },
+        { id: 'DT', row: 0, col: 5 }, { id: 'DP', row: 0, col: 6 }
+      ];
+      
+      const State = { 
+        selectedCell: null, isAnimating: false, isRotating: false, rotationOrigin: null,
+        currentTurn: 'purple', turnCount: 1, purpleScore: 0, orangeScore: 0, gameOver: false,
+        rotationsThisTurn: 0, rotatedPieceId: null,
+        gameMode: 'bot', // '2-player', 'bot', or 'online'
+        botTeam: 'orange',
+        // NEW: Online state properties
+        isOnlineGame: false,
+        myTeam: null,
+        myNickname: '',
+        opponentNickname: ''
+      };
+
+      // NEW: PeerJS variables
+      let peer = null;
+      let conn = null;
+      
+      const board = document.getElementById('board');
+      let cells = [];
+      let boardState = [];
+      let controls, rotateBtn, confirmBtn, cancelBtn, rotateActions;
+      let winMessage, settingsBtn, settingsModal, onlineSetupModal;
+      let pieceUID = 0;
+
+      let highlightTimer = null;
+      let accessibleHighlightLayers = [];
+      let currentLayerIndex = 0;
+
+      const keyRC = (r,c) => `${r},${c}`;
+      const unkeyRC = (k) => k.split(',').map(s => parseInt(s, 10));
+
+      // --- NEW: ONLINE COORDINATE TRANSFORMATION HELPERS ---
+      // Transforms local visual coordinates to the canonical system for sending
+      function transformCoordsForSend(r, c) {
+          if (State.myTeam === 'orange') {
+              return [CONFIG.ROWS - 1 - r, CONFIG.COLS - 1 - c];
+          }
+          return [r, c];
+      }
+      // Transforms canonical coordinates received from opponent to local visual system
+      function transformCoordsForReceive(r, c) {
+          if (State.myTeam === 'orange') {
+              return [CONFIG.ROWS - 1 - r, CONFIG.COLS - 1 - c];
+          }
+          return [r, c];
+      }
+
+      function applyConfig() {
+        const root = document.documentElement;
+        root.style.setProperty('--grid-rows', CONFIG.ROWS);
+        root.style.setProperty('--grid-cols', CONFIG.COLS);
+      }
+
+      function inBounds(r, c) { return r >= 0 && r < CONFIG.ROWS && c >= 0 && c < CONFIG.COLS; }
+      function getCell(r, c) { return cells[r * CONFIG.COLS + c]; }
+      function getTeam(pieceEl) { return pieceEl?.dataset.team; }
+      function getType(pieceEl) { return pieceEl?.dataset.pieceId; }
+      function getPieceType(pieceEl) { return pieceEl?.dataset.pieceType; }
+      function getUID(pieceEl) { return pieceEl?.dataset.uid; }
+      function unitVectors(team) {
+        if (team === 'orange') return { up:[1,0], down:[-1,0], left:[0,1], right:[0,-1] };
+        return { up:[-1,0], down:[1,0], left:[0,-1], right:[0,1] };
+      }
+      function getRotatedUnitVectors(team, rotation) {
+        const base = unitVectors(team);
+        const vectors = [base.up, base.right, base.down, base.left]; // N, E, S, W for the team
+        const shift = (rotation / 90) % 4;
+        return {
+            up: vectors[shift], right: vectors[(shift + 1) % 4],
+            down: vectors[(shift + 2) % 4], left: vectors[(shift + 3) % 4]
+        };
+      }
+      const add = (a,b) => [a[0]+b[0], a[1]+b[1]];
+      const mul = (a,k) => [a[0]*k, a[1]*k];
+      function getImmediateMovesForPiece(r, c, pieceData, customRotation) {
+        const t = pieceData.id;
+        const team = pieceData.team;
+        const rotation = customRotation ?? pieceData.rotation;
+        const { up, down, left, right } = getRotatedUnitVectors(team, rotation);
+        const moves = [];
+        const push = (d) => {
+          const rr = r + d[0], cc = c + d[1];
+          if (inBounds(rr, cc)) moves.push([rr, cc]);
+        };
+        if (t === 'PR') { push(left); push(add(right, down)); }
+        else if (t === 'PL') { push(right); push(add(left, down)); }
+        else if (t === 'PX') { push(add(right, up)); push(add(right, down)); push(add(left, up)); push(add(left, down)); }
+        else if (t === 'DP') { push(up); push(mul(up, 2)); push(left); push(right); }
+        else if (t === 'DT') { push(up); push(add(up, left)); push(add(up, right)); push(down); }
+        else if (t === 'DN') { push(up); push(down); push(mul(left, 2)); push(mul(right, 2)); }
+        else if (t === 'C') { push(up); push(add(down, left)); push(add(down, right)); }
+        return moves;
+      }
+      function getAccessibleHighlightLayers(sr, sc, pieceEl, customRotation) {
+        const originKey = keyRC(sr, sc);
+        const originTeam = getTeam(pieceEl); const layers = [];
+        const visitedPieces = new Set([originKey]); const visitedPositions = new Set();
+        let currentLayerPieces = new Set([originKey]);
+        while (currentLayerPieces.size > 0) {
+          const emptyLayer = new Set(); const occupiedLayer = new Set();
+          const nextLayerPieces = new Set();
+          for (const k of currentLayerPieces) {
+            const [r, c] = unkeyRC(k); const el = boardState[r][c];
+            if (!el) continue;
+            const pieceData = { id: getType(el), team: getTeam(el), rotation: parseInt(el.dataset.rotation, 10) || 0 };
+            const isOriginPiece = r === sr && c === sc;
+            const immed = getImmediateMovesForPiece(r, c, pieceData, isOriginPiece ? customRotation : undefined);
+            const onlyOccupied = isOriginPiece;
+            for (const [rr, cc] of immed) {
+              if (!inBounds(rr, cc)) continue;
+              const posK = keyRC(rr, cc);
+              if (posK === originKey || visitedPositions.has(posK)) continue;
+              const target = boardState[rr][cc];
+              if (target) {
+                occupiedLayer.add(posK);
+                if (getTeam(target) === originTeam && !visitedPieces.has(posK)) {
+                  visitedPieces.add(posK); nextLayerPieces.add(posK);
+                }
+              } else if (!onlyOccupied) { emptyLayer.add(posK); }
+            }
+          }
+          if (emptyLayer.size > 0 || occupiedLayer.size > 0) layers.push([emptyLayer, occupiedLayer]);
+          for (const ek of emptyLayer) visitedPositions.add(ek);
+          for (const ok of occupiedLayer) visitedPositions.add(ok);
+          currentLayerPieces = nextLayerPieces;
+        }
+        return layers;
+      }
+      function findMovementPath(sr, sc, dr, dc, customRotation) {
+        const startPiece = boardState[sr][sc];
+        if (!startPiece) return null;
+
+        const queue = [{ pos: [sr, sc], path: [[sr, sc]] }];
+        const visitedPositions = new Set([keyRC(sr, sc)]);
+        const team = getTeam(startPiece);
+
+        while (queue.length > 0) {
+            const { pos, path } = queue.shift();
+            const [r, c] = pos;
+            const currentPieceEl = boardState[r][c];
+            if (!currentPieceEl) continue;
+            const currentPieceData = { id: getType(currentPieceEl), team: getTeam(currentPieceEl), rotation: parseInt(currentPieceEl.dataset.rotation, 10) || 0 };
+
+            const isStartPiece = r === sr && c === sc;
+            const moves = getImmediateMovesForPiece(r, c, currentPieceData, isStartPiece ? customRotation : undefined);
+            for (const [nr, nc] of moves) {
+                if (nr === dr && nc === dc) {
+                    return [...path, [nr, nc]]; // Path found
+                }
+
+                const targetPiece = boardState[nr][nc];
+                const targetKey = keyRC(nr, nc);
+                if (targetPiece && getTeam(targetPiece) === team && !visitedPositions.has(targetKey)) {
+                    visitedPositions.add(targetKey);
+                    queue.push({ pos: [nr, nc], path: [...path, [nr, nc]] });
+                }
+            }
+        }
+        return [[sr, sc], [dr, dc]];
+      }
+      function placePieceAt(r, c, pieceEl) { getCell(r, c).appendChild(pieceEl); boardState[r][c] = pieceEl; }
+      function applyTeamEnergy(piece, team) {
+        const theme = TEAM_ENERGY[team];
+        piece.style.setProperty('--energy-color', theme.color);
+        piece.style.setProperty('--energy-glow-color', theme.glow);
+        piece.dataset.team = team;
+      }
+      function createPieceElement(config, team = 'purple', rotate180 = false) {
+        const piece = document.getElementById('piece-template').content.cloneNode(true).querySelector('.piece');
+        piece.classList.add(TYPE_CLASS[config.type]);
+        (config.directions || []).forEach(dir => piece.classList.add(`show-${dir}`));
+        if (config.id === 'DN') {
+          piece.querySelector('.node.w')?.classList.add('jump-node');
+          piece.querySelector('.node.e')?.classList.add('jump-node');
+        }
+        if (config.id === 'DP') piece.querySelector('.node.n')?.classList.add('power-node');
+        applyTeamEnergy(piece, team);
+        piece.style.setProperty('--base-rot', rotate180 ? '180deg' : '0deg');
+        piece.style.setProperty('--piece-rot', '0deg');
+        piece.dataset.pieceId = config.id; piece.dataset.pieceType = config.type;
+        piece.dataset.team = team; piece.dataset.rotation = '0';
+        piece.dataset.uid = pieceUID++;
+        return piece;
+      }
+      function createBoard() {
+        board.innerHTML = ''; cells = [];
+        boardState = Array.from({ length: CONFIG.ROWS }, () => Array(CONFIG.COLS).fill(null));
+        for (let i = 0; i < CONFIG.ROWS * CONFIG.COLS; i++) {
+          const cell = document.createElement('div'); cell.className = 'cell';
+          cell.dataset.row = Math.floor(i / CONFIG.COLS); cell.dataset.col = i % CONFIG.COLS;
+          cells.push(cell); board.appendChild(cell);
+        }
+        board.addEventListener('click', handleCellClick);
+        PURPLE_SETUP.forEach(({ id, row, col }) => placePieceAt(row, col, createPieceElement(CONFIG_BY_ID[id], 'purple')));
+        ORANGE_SETUP.forEach(({ id, row, col }) => placePieceAt(row, col, createPieceElement(CONFIG_BY_ID[id], 'orange', true)));
+      }
+      
+      function createScoreBars() {
+        const purpleContainer = document.getElementById('score-purple');
+        const orangeContainer = document.getElementById('score-orange');
+        purpleContainer.innerHTML = ''; orangeContainer.innerHTML = '';
+        for (let i = 0; i < CONFIG.WIN_SCORE; i++) {
+            const pBar = document.createElement('div');
+            pBar.className = 'score-bar';
+            pBar.style.borderColor = TEAM_ENERGY.purple.color;
+            pBar.style.setProperty('--fill-color', TEAM_ENERGY.purple.color);
+            purpleContainer.appendChild(pBar);
+
+            const oBar = document.createElement('div');
+            oBar.className = 'score-bar';
+            oBar.style.borderColor = TEAM_ENERGY.orange.color;
+            oBar.style.setProperty('--fill-color', TEAM_ENERGY.orange.color);
+            orangeContainer.appendChild(oBar);
+        }
+      }
+      function updateTurnVisuals() {
+        const team = State.currentTurn;
+        const color = TEAM_ENERGY[team].color;
+        board.style.borderColor = color;
+        updateControlsPosition();
+      }
+      function updateScoreDisplay() {
+        const purpleBars = document.querySelectorAll('#score-purple .score-bar');
+        purpleBars.forEach((bar, index) => bar.classList.toggle('filled', index < State.purpleScore));
+        const orangeBars = document.querySelectorAll('#score-orange .score-bar');
+        orangeBars.forEach((bar, index) => bar.classList.toggle('filled', index < State.orangeScore));
+      }
+      function updateScore(team, points) {
+        if (team === 'purple') State.purpleScore += points;
+        else State.orangeScore += points;
+        updateScoreDisplay();
+        checkWinCondition();
+      }
+      function endGame(winner) {
+        State.gameOver = true;
+        winMessage.textContent = `${winner} Wins!`;
+        const winnerTeam = winner.toLowerCase();
+        winMessage.style.textShadow = `0 0 8px #fff, 0 0 15px ${TEAM_ENERGY[winnerTeam].color}`;
+        winMessage.classList.add('visible');
+        board.classList.add('interaction-locked');
+        setTimeout(resetGame, 4000);
+      }
+      function resetGame(startFresh = true) {
+        if(startFresh) {
+          State.isOnlineGame = false;
+          State.myTeam = null;
+        }
+
+        Object.assign(State, {
+            selectedCell: null, isAnimating: false, isRotating: false, rotationOrigin: null,
+            currentTurn: 'purple', turnCount: 1, purpleScore: 0, orangeScore: 0, gameOver: false,
+            rotationsThisTurn: 0, rotatedPieceId: null
+        });
+
+        winMessage.classList.remove('visible');
+        board.classList.remove('interaction-locked', 'board-flipped');
+        controls.classList.remove('board-flipped');
+        
+        pieceUID = 0;
+        createBoard();
+        updateTurnVisuals();
+        updateScoreDisplay();
+        
+        if (!State.isOnlineGame && State.gameMode === 'bot' && State.currentTurn === State.botTeam) {
+            executeBotTurn();
+        }
+      }
+      function checkWinCondition() {
+        if (State.gameOver) return;
+        let winner = null;
+        if (State.purpleScore >= CONFIG.WIN_SCORE) winner = 'Purple';
+        if (State.orangeScore >= CONFIG.WIN_SCORE) winner = 'Orange';
+        if (winner) {
+          endGame(winner);
+        }
+      }
+      function hasAnyValidMoves(team) {
+        const pieces = document.querySelectorAll(`.piece[data-team="${team}"]`);
+        for (const piece of pieces) {
+            const immobilizedUntil = parseInt(piece.dataset.immobilizedTurn, 10);
+            if (immobilizedUntil && State.turnCount < immobilizedUntil) continue;
+            const cell = piece.closest('.cell');
+            if (!cell) continue;
+            const r = parseInt(cell.dataset.row, 10);
+            const c = parseInt(cell.dataset.col, 10);
+            const layers = getAccessibleHighlightLayers(r, c, piece);
+            for (const [empties, occupieds] of layers) {
+                if (empties.size > 0) return true;
+                for (const occKey of occupieds) {
+                    const [or, oc] = unkeyRC(occKey);
+                    const targetPiece = boardState[or][oc];
+                    if (targetPiece && getTeam(targetPiece) !== team) return true;
+                }
+            }
+        }
+        return false;
+      }
+      async function switchTurn() {
+        if (State.gameOver) return;
+        State.turnCount++;
+        State.currentTurn = State.currentTurn === 'purple' ? 'orange' : 'purple';
+        State.rotationsThisTurn = 0;
+        State.rotatedPieceId = null;
+        updateTurnVisuals();
+        const pieces = document.querySelectorAll(`.piece[data-team="${State.currentTurn}"]`);
+        pieces.forEach(piece => {
+            const immobilizedUntil = parseInt(piece.dataset.immobilizedTurn, 10);
+            if (immobilizedUntil && State.turnCount >= immobilizedUntil) {
+                piece.removeAttribute('data-immobilized-turn');
+                piece.classList.remove('immobilized');
+                const parentCell = piece.closest('.cell');
+                if (parentCell) parentCell.classList.remove('has-immobilized');
+            }
+        });
+        if (!hasAnyValidMoves(State.currentTurn)) {
+            const winner = State.currentTurn === 'purple' ? 'Orange' : 'Purple';
+            endGame(winner);
+            return;
+        }
+
+        if (State.gameMode === 'bot' && !State.isOnlineGame && State.currentTurn === State.botTeam) {
+            await executeBotTurn();
+        }
+      }
+
+      function stopHighlightTimer() { if (highlightTimer) clearInterval(highlightTimer); highlightTimer = null; }
+      function hideAllHighlights() { stopHighlightTimer(); cells.forEach(c => c.classList.remove('available', 'swap-available')); }
+      function clearHighlights(isMoving = false) {
+        stopHighlightTimer();
+        if (State.isRotating) exitRotationMode(false, false);
+        cells.forEach(cell => cell.classList.remove('available', 'swap-available', 'selected'));
+        if (State.selectedCell && !isMoving) startDeselectAnimation(State.selectedCell);
+        State.selectedCell = null;
+        rotateBtn.classList.add('hidden');
+        rotateActions.classList.add('hidden');
+      }
+      function startDeselectAnimation(cell) {
+        cell.classList.remove('selected', 'available', 'swap-available');
+        cell.classList.add('deselecting', 'no-hover');
+        cell.addEventListener('animationend', () => cell.classList.remove('deselecting', 'no-hover'), { once: true });
+      }
+      function markInvalid(cell) {
+        cell.classList.add('invalid', 'no-hover');
+        cell.addEventListener('animationend', () => cell.classList.remove('invalid', 'no-hover'), { once: true });
+      }
+      function revealHighlightsProgressively(sr, sc) {
+        stopHighlightTimer(); hideAllHighlights();
+        const piece = boardState[sr][sc];
+        if (!piece) return;
+        accessibleHighlightLayers = getAccessibleHighlightLayers(sr, sc, piece);
+        currentLayerIndex = 0;
+        highlightTimer = setInterval(() => {
+          if (currentLayerIndex >= accessibleHighlightLayers.length) { stopHighlightTimer(); return; }
+          const [empties, occupieds] = accessibleHighlightLayers[currentLayerIndex];
+          for (const k of empties) getCell(...unkeyRC(k)).classList.add('available');
+          for (const k of occupieds) getCell(...unkeyRC(k)).classList.add('swap-available');
+          currentLayerIndex++;
+        }, CONFIG.LAYER_DELAY);
+      }
+      function makeFixedClone(pieceEl, rect) {
+        const clone = pieceEl.cloneNode(true);
+        clone.style.position = 'fixed'; clone.style.left = `${rect.left}px`;
+        clone.style.top = `${rect.top}px`; clone.style.width = `${rect.width}px`;
+        clone.style.height = `${rect.height}px`; clone.style.zIndex = '1000';
+        clone.style.pointerEvents = 'none'; 
+        clone.style.transform = getComputedStyle(pieceEl).transform;
+        
+        // NEW: Adjust transform for flipped board clone
+        if (board.classList.contains('board-flipped')) {
+           const currentTransform = getComputedStyle(pieceEl).transform;
+           // The browser gives a matrix, so we just apply a new rotation on top of it.
+           clone.style.transform = `${currentTransform} rotate(180deg)`;
+        }
+        return clone;
+      }
+      
+      async function executeMove(fromCell, destCell, path, isSwap, preMoveRotation, isRemoteMove = false) {
+        if (State.isAnimating) return;
+        const pieceA = fromCell.querySelector('.piece');
+        const pieceB = isSwap ? destCell.querySelector('.piece') : null;
+        if (!pieceA || (isSwap && !pieceB)) return;
+        
+        const [aR, aC] = [fromCell.dataset.row, fromCell.dataset.col].map(Number);
+        const [bR, bC] = [destCell.dataset.row, destCell.dataset.col].map(Number);
+        
+        State.isAnimating = true;
+        board.classList.add('interaction-locked');
+        
+        if (preMoveRotation !== undefined && preMoveRotation !== (parseInt(pieceA.dataset.rotation, 10) || 0)) {
+            pieceA.classList.add('no-transition');
+            pieceA.style.setProperty('--piece-rot', `${preMoveRotation}deg`);
+            pieceA.dataset.rotation = preMoveRotation;
+            await new Promise(resolve => requestAnimationFrame(() => {
+                pieceA.classList.remove('no-transition');
+                setTimeout(resolve, 300);
+            }));
+        }
+
+        const aStartRect = fromCell.getBoundingClientRect();
+        const cloneA = makeFixedClone(pieceA, aStartRect);
+        let cloneB = null;
+
+        pieceA.parentElement.removeChild(pieceA);
+        if (isSwap) {
+          const bStartRect = destCell.getBoundingClientRect();
+          cloneB = makeFixedClone(pieceB, bStartRect);
+          pieceB.parentElement.removeChild(pieceB);
+          document.body.appendChild(cloneB);
+        }
+        document.body.appendChild(cloneA);
+
+        const totalDuration = CONFIG.STEP_DURATION * (path.length - 1 || 1);
+        const keyframesA = path.map((step, i) => ({
+            left: `${getCell(step[0], step[1]).getBoundingClientRect().left}px`,
+            top: `${getCell(step[0], step[1]).getBoundingClientRect().top}px`,
+            offset: path.length > 1 ? i / (path.length - 1) : 1
+        }));
+        
+        const animA = cloneA.animate(keyframesA, { duration: totalDuration, easing: 'ease-in-out' });
+        const animPromises = [animA.finished.catch(()=>{})];
+        if (isSwap) {
+            const animB = cloneB.animate([
+              { left: `${destCell.getBoundingClientRect().left}px`, top: `${destCell.getBoundingClientRect().top}px` },
+              { left: `${aStartRect.left}px`, top: `${aStartRect.top}px` }
+            ], { duration: totalDuration, easing: 'ease-in-out' });
+            animPromises.push(animB.finished.catch(()=>{}));
+        }
+        await Promise.all(animPromises);
+
+        let scoreToAdd = 0;
+        let pieceARemoved = false;
+        let pieceBRemoved = false;
+        
+        if (isSwap && getType(pieceA) === 'C' && getType(pieceB) === 'C') {
+            pieceBRemoved = true;
+            scoreToAdd = 2;
+        }
+
+        const promotionRow = getTeam(pieceA) === 'purple' ? 0 : CONFIG.ROWS - 1;
+        if (getPieceType(pieceA) === 'P' && bR === promotionRow) {
+            pieceARemoved = true;
+            scoreToAdd = (scoreToAdd > 0) ? scoreToAdd : 1;
+        }
+        
+        if (!pieceARemoved) destCell.appendChild(pieceA);
+        fromCell.classList.remove('has-immobilized');
+
+        if (isSwap && !pieceBRemoved) {
+            fromCell.appendChild(pieceB);
+            if (getTeam(pieceA) !== getTeam(pieceB)) {
+                pieceB.dataset.immobilizedTurn = State.turnCount + 2;
+                pieceB.classList.add('immobilized');
+                fromCell.classList.add('has-immobilized');
+            }
+        }
+        
+        cloneA.remove();
+        if (cloneB) cloneB.remove();
+
+        boardState[bR][bC] = pieceARemoved ? null : pieceA;
+        boardState[aR][aC] = (isSwap && !pieceBRemoved) ? pieceB : null;
+
+        if (scoreToAdd > 0) updateScore(State.currentTurn, scoreToAdd);
+        
+        startDeselectAnimation(fromCell);
+        clearHighlights(true);
+        State.selectedCell = null;
+        State.isAnimating = false;
+        if (!State.gameOver) board.classList.remove('interaction-locked');
+        
+        // NEW: Send move data to opponent if it's an online game and this was a local move
+        if (State.isOnlineGame && !isRemoteMove && conn && conn.open) {
+            const [sentFromR, sentFromC] = transformCoordsForSend(aR, aC);
+            const [sentToR, sentToC] = transformCoordsForSend(bR, bC);
+            
+            conn.send({
+                type: 'move',
+                from: [sentFromR, sentFromC],
+                to: [sentToR, sentToC],
+                isSwap: isSwap,
+                preMoveRotation: preMoveRotation
+            });
+        }
+        
+        await switchTurn();
+      }
+
+      function updateControlsPosition() {
+        if (State.gameMode === 'bot' && !State.isOnlineGame && State.currentTurn === State.botTeam) {
+            controls.classList.add('hidden');
+            return;
+        }
+
+        // NEW: In online games, only show controls on your turn
+        if(State.isOnlineGame && State.currentTurn !== State.myTeam) {
+            controls.classList.add('hidden');
+            return;
+        }
+
+        controls.classList.remove('hidden');
+
+        // This logic is now relative to the player's team in online mode
+        const isPlayerAtBottom = (!State.isOnlineGame && State.currentTurn === 'purple') || (State.isOnlineGame && State.myTeam === 'purple');
+
+        if (isPlayerAtBottom) {
+             controls.classList.add('purple-turn');
+             controls.classList.remove('orange-turn');
+        } else {
+             controls.classList.remove('purple-turn');
+             controls.classList.add('orange-turn');
+        }
+      }
+
+      function enterRotationMode() {
+        if (!State.selectedCell) return;
+        const piece = State.selectedCell.querySelector('.piece');
+        if (!piece || State.rotationsThisTurn >= 2 || getUID(piece) === State.rotatedPieceId) return;
+        
+        State.isRotating = true;
+        const currentLogicalRotation = parseInt(piece.dataset.rotation, 10) || 0;
+        State.rotationOrigin = { piece, originalRotation: currentLogicalRotation, visualRotation: currentLogicalRotation };
+        rotateBtn.classList.add('active');
+        rotateActions.classList.remove('hidden');
+        hideAllHighlights();
+      }
+
+      function exitRotationMode(confirmChanges = false, reHighlight = true, isRemoteRotate = false) {
+        if (!State.isRotating || !State.rotationOrigin) return;
+        const { piece, originalRotation } = State.rotationOrigin;
+        let newRotation = originalRotation;
+        
+        if (piece) {
+            newRotation = confirmChanges ? (State.rotationOrigin.visualRotation % 360) : originalRotation;
+          if (confirmChanges && newRotation !== originalRotation) {
+            State.rotationsThisTurn++;
+            State.rotatedPieceId = getUID(piece);
+            if (State.rotationsThisTurn >= 2) rotateBtn.classList.add('hidden');
+
+            // NEW: Send rotation data if confirmed in an online game
+            if(State.isOnlineGame && !isRemoteRotate && conn && conn.open) {
+                conn.send({
+                    type: 'rotate',
+                    uid: getUID(piece),
+                    newRotation: newRotation
+                });
+            }
+          }
+          piece.classList.add('no-transition');
+          piece.dataset.rotation = newRotation;
+          piece.style.setProperty('--piece-rot', `${piece.dataset.rotation}deg`);
+          requestAnimationFrame(() => piece.classList.remove('no-transition'));
+        }
+        State.isRotating = false; State.rotationOrigin = null;
+        rotateBtn.classList.remove('active');
+        rotateActions.classList.add('hidden');
+        if (reHighlight && State.selectedCell) {
+            const r = parseInt(State.selectedCell.dataset.row, 10);
+            const c = parseInt(State.selectedCell.dataset.col, 10);
+            revealHighlightsProgressively(r, c);
+        }
+      }
+
+      function handleCellClick(event) {
+        // NEW: Lock input if it's an online game and not our turn
+        if (State.isOnlineGame && State.currentTurn !== State.myTeam) return;
+
+        if (State.isAnimating || State.gameOver || (State.gameMode === 'bot' && State.currentTurn === State.botTeam)) return;
+        const clickedCell = event.target.closest('.cell');
+        if (!clickedCell || clickedCell.classList.contains('deselecting') || clickedCell.classList.contains('invalid')) return;
+
+        if (State.isRotating) {
+            if (clickedCell === State.selectedCell) {
+                const { piece } = State.rotationOrigin;
+                State.rotationOrigin.visualRotation += 90;
+                piece.style.setProperty('--piece-rot', `${State.rotationOrigin.visualRotation}deg`);
+            }
+            return;
+        }
+        const sr = State.selectedCell ? parseInt(State.selectedCell.dataset.row, 10) : -1;
+        const sc = State.selectedCell ? parseInt(State.selectedCell.dataset.col, 10) : -1;
+        const dr = parseInt(clickedCell.dataset.row, 10);
+        const dc = parseInt(clickedCell.dataset.col, 10);
+
+        if (State.selectedCell && (clickedCell.classList.contains('available') || clickedCell.classList.contains('swap-available'))) {
+          const path = findMovementPath(sr, sc, dr, dc);
+          if (!path) { markInvalid(clickedCell); return; }
+          executeMove(State.selectedCell, clickedCell, path, clickedCell.classList.contains('swap-available'));
+          return;
+        }
+        const pieceInCell = clickedCell.querySelector('.piece');
+        if (pieceInCell) {
+          if (getTeam(pieceInCell) !== State.currentTurn) { markInvalid(clickedCell); return; }
+          const immobilizedUntil = parseInt(pieceInCell.dataset.immobilizedTurn, 10);
+          if (immobilizedUntil && State.turnCount < immobilizedUntil) { markInvalid(clickedCell); return; }
+
+          if (clickedCell.classList.contains('selected')) {
+            clearHighlights();
+          } else {
+            if (State.selectedCell) clearHighlights();
+            State.selectedCell = clickedCell;
+            clickedCell.classList.add('selected');
+            if (getPieceType(pieceInCell) === 'D') {
+                const pieceUID = getUID(pieceInCell);
+                if (State.rotationsThisTurn < 2 && pieceUID !== State.rotatedPieceId) {
+                    rotateBtn.classList.remove('hidden');
+                } else {
+                    rotateBtn.classList.add('hidden');
+                }
+            }
+            revealHighlightsProgressively(dr, dc);
+          }
+        } else {
+          if (State.selectedCell) clearHighlights();
+          markInvalid(clickedCell);
+        }
+      }
+
+      // --- BOT LOGIC (Unchanged) ---
+      const PIECE_VALUES = { 'C': 5, 'D': 4, 'P': 2 };
+
+      function getPieceDataFromElement(el) {
+        if (!el) return null;
+        return {
+            id: getType(el), type: getPieceType(el), team: getTeam(el),
+            rotation: parseInt(el.dataset.rotation, 10) || 0,
+            immobilizedTurn: parseInt(el.dataset.immobilizedTurn, 10) || 0
+        };
+      }
+      function getBoardStateAsData(currentBoardState) {
+          return currentBoardState.map(row => row.map(getPieceDataFromElement));
+      }
+      function getAllPossibleMoves(boardData, team, turnCount) {
+        const allMoves = [];
+        for (let r = 0; r < CONFIG.ROWS; r++) {
+            for (let c = 0; c < CONFIG.COLS; c++) {
+                const piece = boardData[r][c];
+                if (!piece || piece.team !== team || (piece.immobilizedTurn && turnCount < piece.immobilizedTurn)) continue;
+                const rotationsToTest = (piece.type === 'D') ? [0, 90, 180, 270] : [piece.rotation];
+                rotationsToTest.forEach(rot => {
+                    const visited = new Set(); const queue = [[r, c]]; visited.add(keyRC(r,c));
+                    while(queue.length > 0) {
+                        const [cr, cc] = queue.shift(); const currentPiece = boardData[cr][cc];
+                        const isStartPiece = cr === r && cc === c;
+                        const moves = getImmediateMovesForPiece(cr, cc, currentPiece, isStartPiece ? rot : undefined);
+                        for (const [dr, dc] of moves) {
+                            const targetPiece = boardData[dr][dc];
+                            if (targetPiece) {
+                                if (targetPiece.team !== team) { allMoves.push({ from: [r, c], to: [dr, dc], isSwap: true, preMoveRotation: rot });
+                                } else if (!visited.has(keyRC(dr,dc))) { visited.add(keyRC(dr,dc)); queue.push([dr,dc]); }
+                            } else if (!isStartPiece) { allMoves.push({ from: [r, c], to: [dr, dc], isSwap: false, preMoveRotation: rot }); }
+                        }
+                    }
+                });
+            }
+        }
+        return allMoves;
+      }
+      function simulateMove(boardData, move, turnCount) {
+        const newBoard = JSON.parse(JSON.stringify(boardData));
+        const { from, to, isSwap, preMoveRotation } = move;
+        const [sr, sc] = from; const [dr, dc] = to;
+        const movingPiece = { ...newBoard[sr][sc], rotation: preMoveRotation };
+        const targetPiece = newBoard[dr][dc] ? { ...newBoard[dr][dc] } : null;
+        let scoreChange = 0; let pieceARemoved = false; let pieceBRemoved = false;
+        if (isSwap && movingPiece.id === 'C' && targetPiece.id === 'C') { pieceBRemoved = true; scoreChange = 2; }
+        const promotionRow = movingPiece.team === 'purple' ? 0 : CONFIG.ROWS - 1;
+        if (movingPiece.type === 'P' && dr === promotionRow) { pieceARemoved = true; scoreChange = Math.max(scoreChange, 1); }
+        newBoard[sr][sc] = null;
+        if (!pieceARemoved) newBoard[dr][dc] = movingPiece; else newBoard[dr][dc] = null;
+        if (isSwap && !pieceBRemoved) {
+            newBoard[sr][sc] = targetPiece;
+            if (movingPiece.team !== targetPiece.team) { newBoard[sr][sc].immobilizedTurn = turnCount + 2; }
+        }
+        return { newBoard, scoreChange };
+      }
+      function evaluateBoardState(boardData, team, scores) {
+        let totalScore = 0; const opponent = team === 'purple' ? 'orange' : 'purple';
+        const scoreAdvantage = (team === 'orange' ? scores.orangeScore : scores.purpleScore) - (team === 'orange' ? scores.purpleScore : scores.orangeScore);
+        totalScore += scoreAdvantage * 1000;
+        for (let r = 0; r < CONFIG.ROWS; r++) { for (let c = 0; c < CONFIG.COLS; c++) {
+                const piece = boardData[r][c]; if (!piece) continue;
+                const pieceValue = PIECE_VALUES[piece.type] || 1; let pieceScore = pieceValue * 10;
+                if (piece.type === 'P') { const progress = (piece.team === 'orange') ? r : (CONFIG.ROWS - 1 - r); pieceScore += progress * 5; }
+                if (c > 1 && c < 5) { pieceScore += 2; }
+                const moves = getImmediateMovesForPiece(r, c, piece);
+                for (const [nr, nc] of moves) { const target = boardData[nr][nc]; if (target && target.team !== piece.team) { pieceScore += (PIECE_VALUES[target.type] || 1) * 2; }}
+                if (piece.team === team) { totalScore += pieceScore; } else { totalScore -= pieceScore; }
+        }}
+        return totalScore;
+      }
+      async function executeBotTurn() {
+        board.classList.add('interaction-locked'); await new Promise(resolve => setTimeout(resolve, 800));
+        const currentBoardData = getBoardStateAsData(boardState); const possibleMoves = getAllPossibleMoves(currentBoardData, State.botTeam, State.turnCount);
+        if (possibleMoves.length === 0) { return; }
+        let bestMove = possibleMoves[0]; let bestScore = -Infinity;
+        for (const move of possibleMoves) {
+            const { newBoard: boardAfterBotMove, scoreChange } = simulateMove(currentBoardData, move, State.turnCount);
+            const botScores = { purpleScore: State.purpleScore + (State.botTeam === 'purple' ? scoreChange : 0), orangeScore: State.orangeScore + (State.botTeam === 'orange' ? scoreChange : 0)};
+            if (botScores[State.botTeam] >= CONFIG.WIN_SCORE) { bestMove = move; bestScore = 100000; break; }
+            const opponent = State.botTeam === 'purple' ? 'orange' : 'purple';
+            const opponentMoves = getAllPossibleMoves(boardAfterBotMove, opponent, State.turnCount + 1);
+            let worstCaseScoreForBot = Infinity;
+            if (opponentMoves.length === 0) { worstCaseScoreForBot = evaluateBoardState(boardAfterBotMove, State.botTeam, botScores);
+            } else {
+                for (const oppMove of opponentMoves) {
+                    const { newBoard: boardAfterPlayerMove, scoreChange: oppScoreChange } = simulateMove(boardAfterBotMove, oppMove, State.turnCount + 1);
+                    const finalScores = { purpleScore: botScores.purpleScore + (opponent === 'purple' ? oppScoreChange : 0), orangeScore: botScores.orangeScore + (opponent === 'orange' ? oppScoreChange : 0) };
+                    const score = evaluateBoardState(boardAfterPlayerMove, State.botTeam, finalScores);
+                    worstCaseScoreForBot = Math.min(worstCaseScoreForBot, score);
+                }
+            }
+            if (worstCaseScoreForBot > bestScore) { bestScore = worstCaseScoreForBot; bestMove = move; }
+        }
+        if (bestMove) {
+            const { from, to, isSwap, preMoveRotation } = bestMove;
+            const fromCell = getCell(from[0], from[1]); const destCell = getCell(to[0], to[1]);
+            const path = findMovementPath(from[0], from[1], to[0], to[1], preMoveRotation);
+            await executeMove(fromCell, destCell, path, isSwap, preMoveRotation);
+        } else { await switchTurn(); }
+      }
+      // --- END BOT LOGIC ---
+
+      // --- NEW: ONLINE GAME LOGIC ---
+
+      function handleReceivedData(data) {
+          switch(data.type) {
+              case 'start-game':
+                  // This is received by the player who did NOT initiate the start signal
+                  const myTeam = data.teams[State.myNickname];
+                  startGameOnline(myTeam);
+                  break;
+              case 'move':
+                  const [fromR, fromC] = transformCoordsForReceive(data.from[0], data.from[1]);
+                  const [toR, toC] = transformCoordsForReceive(data.to[0], data.to[1]);
+                  const fromCell = getCell(fromR, fromC);
+                  const destCell = getCell(toR, toC);
+                  const path = findMovementPath(fromR, fromC, toR, toC, data.preMoveRotation);
+                  if (fromCell && destCell && path) {
+                      executeMove(fromCell, destCell, path, data.isSwap, data.preMoveRotation, true);
+                  }
+                  break;
+              case 'rotate':
+                  const pieceToRotate = document.querySelector(`.piece[data-uid="${data.uid}"]`);
+                  if (pieceToRotate) {
+                      pieceToRotate.dataset.rotation = data.newRotation;
+                      pieceToRotate.style.setProperty('--piece-rot', `${data.newRotation}deg`);
+                  }
+                  break;
+          }
+      }
+
+      function setupConnectionListeners(connection) {
+          conn = connection;
+          const statusEl = document.getElementById('online-status');
+          
+          conn.on('data', handleReceivedData);
+          conn.on('open', () => {
+              statusEl.textContent = `Connected to ${conn.peer}!`;
+              
+              // Simple host selection: player with the lexicographically smaller ID initiates.
+              if (State.myNickname < State.opponentNickname) {
+                  const myTeam = Math.random() < 0.5 ? 'purple' : 'orange';
+                  const opponentTeam = myTeam === 'purple' ? 'orange' : 'purple';
+                  
+                  const teamAssignments = {
+                      [State.myNickname]: myTeam,
+                      [State.opponentNickname]: opponentTeam
+                  };
+
+                  conn.send({type: 'start-game', teams: teamAssignments});
+                  startGameOnline(myTeam);
+              }
+          });
+          conn.on('close', () => {
+              alert(`${conn.peer} has disconnected.`);
+              resetGame(true);
+              onlineSetupModal.classList.add('visible');
+              document.getElementById('game-wrapper').style.display = 'none';
+          });
+      }
+
+      function initializePeer() {
+          const myNick = document.getElementById('my-nickname').value.trim();
+          const oppNick = document.getElementById('opponent-nickname').value.trim();
+          const statusEl = document.getElementById('online-status');
+
+          if (!myNick || !oppNick) {
+              statusEl.textContent = "Both nicknames are required.";
+              return;
+          }
+          if (myNick === oppNick) {
+              statusEl.textContent = "Nicknames must be different.";
+              return;
+          }
+
+          State.myNickname = myNick;
+          State.opponentNickname = oppNick;
+          statusEl.textContent = "Initializing...";
+
+          if(peer) peer.destroy(); // Clean up old peer object if it exists
+          peer = new Peer(myNick);
+
+          peer.on('open', (id) => {
+              statusEl.textContent = `Your ID: ${id}. Waiting for opponent...`;
+              // Attempt to connect to the opponent
+              const connection = peer.connect(oppNick);
+              setupConnectionListeners(connection);
+          });
+          
+          // Handle incoming connections
+          peer.on('connection', (connection) => {
+              setupConnectionListeners(connection);
+          });
+
+          peer.on('error', (err) => {
+              console.error(err);
+              statusEl.textContent = `Error: ${err.type}. Try a different nickname.`;
+          });
+      }
+
+      function startGameOnline(team) {
+          State.gameMode = 'online';
+          State.isOnlineGame = true;
+          State.myTeam = team;
+
+          onlineSetupModal.classList.remove('visible');
+          document.getElementById('game-wrapper').style.display = 'flex';
+          
+          resetGame(false); // Reset board without clearing online state
+
+          if (State.myTeam === 'orange') {
+              board.classList.add('board-flipped');
+              controls.classList.add('board-flipped');
+          }
+          updateTurnVisuals(); // Re-orient controls
+      }
+
+
+      // --- END ONLINE GAME LOGIC ---
+
+      function init() {
+        applyConfig();
+        
+        controls = document.getElementById('controls');
+        rotateBtn = document.getElementById('rotate-btn'); 
+        confirmBtn = document.getElementById('confirm-btn');
+        cancelBtn = document.getElementById('cancel-btn'); 
+        rotateActions = document.getElementById('rotate-actions');
+        winMessage = document.getElementById('win-message');
+        settingsBtn = document.getElementById('settings-btn');
+        settingsModal = document.getElementById('settings-modal');
+        onlineSetupModal = document.getElementById('online-setup');
+
+        settingsBtn.addEventListener('click', () => {
+          onlineSetupModal.classList.remove('visible');
+          settingsModal.classList.add('visible');
+          document.getElementById('game-wrapper').style.display = 'flex';
+        });
+
+        settingsModal.addEventListener('click', (e) => {
+            if (e.target === settingsModal) {
+                settingsModal.classList.remove('visible');
+            }
+        });
+        document.getElementById('mode-2p').addEventListener('click', () => {
+            State.gameMode = '2-player';
+            settingsModal.classList.remove('visible');
+            resetGame(true);
+        });
+        document.getElementById('mode-bot').addEventListener('click', () => {
+            State.gameMode = 'bot';
+            settingsModal.classList.remove('visible');
+            resetGame(true);
+        });
+
+        // NEW: Online Mode button
+        document.getElementById('mode-online').addEventListener('click', () => {
+            settingsModal.classList.remove('visible');
+            onlineSetupModal.classList.add('visible');
+            document.getElementById('game-wrapper').style.display = 'none';
+        });
+
+        document.getElementById('connect-btn').addEventListener('click', initializePeer);
+        
+        rotateBtn.addEventListener('click', () => {
+            if (State.isRotating) exitRotationMode(false); else enterRotationMode();
+        });
+        confirmBtn.addEventListener('click', () => exitRotationMode(true));
+        cancelBtn.addEventListener('click', () => exitRotationMode(false));
+        
+        createBoard();
+        createScoreBars();
+        resetGame(true); // Start with a default game mode
+        document.getElementById('game-wrapper').style.display = 'none'; // Hide game until mode is selected
+        settingsModal.classList.add('visible');
+      }
+      init();
+    });
+  </script>
+
+</body>
+</html>
